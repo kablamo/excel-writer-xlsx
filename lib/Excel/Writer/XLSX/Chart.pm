@@ -70,8 +70,10 @@ sub new {
     $self->{_series}            = [];
     $self->{_embedded}          = 0;
     $self->{_id}                = '';
+    $self->{_series_count}      = -1;
     $self->{_style_id}          = 2;
     $self->{_axis_ids}          = [];
+    $self->{_axis2_ids}         = [];
     $self->{_has_category}      = 0;
     $self->{_requires_category} = 0;
     $self->{_legend_position}   = 'right';
@@ -84,6 +86,8 @@ sub new {
     $self->{_protection}        = 0;
     $self->{_x_axis}            = {};
     $self->{_y_axis}            = {};
+    $self->{_y2_axis}           = {};
+    $self->{_x2_axis}           = {};
     $self->{_chart_name}        = '';
     $self->{_show_blanks}       = 'gap';
     $self->{_show_hidden_data}  = 0;
@@ -201,6 +205,10 @@ sub add_series {
     # Set the "invert if negative" fill property.
     my $invert_if_neg = $arg{invert_if_negative};
 
+    # Set the secondary axis properties.
+    my $x2_axis = $arg{x2_axis};
+    my $y2_axis = $arg{y2_axis};
+
     # Add the user supplied data to the internal structures.
     %arg = (
         _values        => $values,
@@ -216,10 +224,14 @@ sub add_series {
         _trendline     => $trendline,
         _labels        => $labels,
         _invert_if_neg => $invert_if_neg,
+        _x2_axis       => $x2_axis,
+        _y2_axis       => $y2_axis,
     );
 
 
     push @{ $self->{_series} }, \%arg;
+
+    $self->{_series_count}++;
 }
 
 
@@ -247,9 +259,48 @@ sub set_x_axis {
 sub set_y_axis {
 
     my $self = shift;
-    my $axis = $self->_convert_axis_args( @_ );
+    my $axis = $self->_convert_axis_args( major_gridlines => 1, @_ );
 
     $self->{_y_axis} = $axis;
+}
+
+
+###############################################################################
+#
+# set_x2_axis()
+#
+# Set the properties of the secondary X-axis.
+#
+sub set_x2_axis {
+
+    my $self = shift;
+    my $axis = $self->_convert_axis_args(
+        label_position => "none",
+        crossing       => "max",
+        show           => 0,
+        @_
+    );
+
+    $self->{_x2_axis} = $axis;
+}
+
+
+###############################################################################
+#
+# set_y2_axis()
+#
+# Set the properties of the secondary Y-axis.
+#
+sub set_y2_axis {
+
+    my $self = shift;
+    my $axis = $self->_convert_axis_args(
+        major_gridlines => 0,
+        show            => 1,
+        @_
+    );
+
+    $self->{_y2_axis} = $axis;
 }
 
 
@@ -521,6 +572,8 @@ sub _convert_axis_args {
         _crossing        => $arg{crossing},
         _position        => $arg{position},
         _label_position  => $arg{label_position},
+        _major_gridlines => $arg{major_gridlines},
+        _show            => $arg{show} // 1,
     };
 
     # Only use the first letter of bottom, top, left or right.
@@ -1012,24 +1065,51 @@ sub _get_labels_properties {
     return $labels;
 }
 
+# returns series which use the primary axes
+sub _get_primary_axes_series {
+
+    my $self = shift;
+    my @wanted;
+
+    for my $series ( @{ $self->{_series} } ) {
+        push @wanted, $series unless $series->{_y2_axis};
+    }
+
+    return @wanted;
+}
+
+# returns series which use the secondary axes
+sub _get_secondary_axes_series {
+
+    my $self = shift;
+    my @wanted;
+
+    for my $series ( @{ $self->{_series} } ) {
+        push @wanted, $series if $series->{_y2_axis};
+    }
+
+    return @wanted;
+}
+
 
 ###############################################################################
 #
-# _add_axis_id()
+# _add_axis_ids()
 #
-# Add a unique id for an axis.
+# Add unique ids for primary or secondary axes
 #
-sub _add_axis_id {
+sub _add_axis_ids {
 
     my $self       = shift;
+    my %args       = @_;
     my $chart_id   = 1 + $self->{_id};
-    my $axis_count = 1 + @{ $self->{_axis_ids} };
+    my $axis_count = 1 + @{ $self->{_axis2_ids} } + @{ $self->{_axis_ids} };
 
-    my $axis_id = sprintf '5%03d%04d', $chart_id, $axis_count;
+    my $id1 = sprintf '5%03d%04d', $chart_id, $axis_count;
+    my $id2 = sprintf '5%03d%04d', $chart_id, $axis_count + 1;
 
-    push @{ $self->{_axis_ids} }, $axis_id;
-
-    return $axis_id;
+    push @{ $self->{_axis_ids} },  $id1, $id2 if $args{primary_axes};
+    push @{ $self->{_axis2_ids} }, $id1, $id2 if !$args{primary_axes};
 }
 
 
@@ -1254,18 +1334,40 @@ sub _write_plot_area {
     # Write the c:layout element.
     $self->_write_layout();
 
-    # Write the subclass chart type element.
-    $self->_write_chart_type();
+    # TODO: (for JMCNAMARA todo :)
+    # foreach my $chart_type (@chart_types)
 
-    # Write the c:catAx element.
-    $self->_write_cat_axis();
+    # Write the subclass chart type elements for primary and secondary axes
+    $self->_write_chart_type( primary_axes => 1 );
+    $self->_write_chart_type( primary_axes => 0 );
 
-    # Write the c:catAx element.
-    $self->_write_val_axis();
+    # Write c:catAx and c:valAx elements for series using primary axes
+    $self->_write_cat_axis(
+        x_axis   => $self->{_x_axis},
+        y_axis   => $self->{_y_axis},
+        axis_ids => $self->{_axis_ids}
+    );
+    $self->_write_val_axis(
+        x_axis   => $self->{_x_axis},
+        y_axis   => $self->{_y_axis},
+        axis_ids => $self->{_axis_ids}
+    );
+
+    # Write c:valAx and c:catAx elements for series using secondary axes
+    $self->_write_val_axis(
+        x_axis   => $self->{_x2_axis},
+        y_axis   => $self->{_y2_axis},
+        axis_ids => $self->{_axis2_ids}
+    );
+    $self->_write_cat_axis(
+        x_axis   => $self->{_x2_axis},
+        y_axis   => $self->{_y2_axis},
+        axis_ids => $self->{_axis2_ids}
+    );
+
 
     $self->{_writer}->endTag( 'c:plotArea' );
 }
-
 
 ##############################################################################
 #
@@ -1319,24 +1421,10 @@ sub _write_grouping {
 #
 sub _write_series {
 
-    my $self = shift;
+    my $self   = shift;
+    my $series = shift;
 
-    # Write each series with subelements.
-    my $index = 0;
-    for my $series ( @{ $self->{_series} } ) {
-        $self->_write_ser( $index++, $series );
-    }
-
-    # Write the c:marker element.
-    $self->_write_marker_value();
-
-    # Generate the axis ids.
-    $self->_add_axis_id();
-    $self->_add_axis_id();
-
-    # Write the c:axId element.
-    $self->_write_axis_id( $self->{_axis_ids}->[0] );
-    $self->_write_axis_id( $self->{_axis_ids}->[1] );
+    $self->_write_ser( $series );
 }
 
 
@@ -1349,8 +1437,8 @@ sub _write_series {
 sub _write_ser {
 
     my $self   = shift;
-    my $index  = shift;
     my $series = shift;
+    my $index  = $self->{_series_count}--;
 
     $self->{_writer}->startTag( 'c:ser' );
 
@@ -1609,6 +1697,33 @@ sub _write_series_formula {
 
 ##############################################################################
 #
+# _write_axis_ids()
+#
+# Write the <c:axId> elements for the primary or secondary axes.
+#
+sub _write_axis_ids {
+
+    my $self = shift;
+    my %args = @_;
+
+    # Generate the axis ids.
+    $self->_add_axis_ids( %args );
+
+    if ( $args{primary_axes} ) {
+        ## Write the axis ids for the primary axes.
+        $self->_write_axis_id( $self->{_axis_ids}->[0] );
+        $self->_write_axis_id( $self->{_axis_ids}->[1] );
+    }
+    else {
+        ## Write the axis ids for the secondary axes.
+        $self->_write_axis_id( $self->{_axis2_ids}->[0] );
+        $self->_write_axis_id( $self->{_axis2_ids}->[1] );
+    }
+}
+
+
+##############################################################################
+#
 # _write_axis_id()
 #
 # Write the <c:axId> element.
@@ -1633,20 +1748,25 @@ sub _write_axis_id {
 sub _write_cat_axis {
 
     my $self     = shift;
+    my %args     = @_;
+    my $x_axis   = $args{x_axis};
+    my $y_axis   = $args{y_axis};
+    my $axis_ids = $args{axis_ids};
+
     my $position = $self->{_cat_axis_position};
     my $horiz    = $self->{_horiz_cat_axis};
-    my $x_axis   = $self->{_x_axis};
-    my $y_axis   = $self->{_y_axis};
 
     # Overwrite the default axis position with a user supplied value.
     $position = $x_axis->{_position} || $position;
 
     $self->{_writer}->startTag( 'c:catAx' );
 
-    $self->_write_axis_id( $self->{_axis_ids}->[0] );
+    $self->_write_axis_id( $axis_ids->[0] );
 
     # Write the c:scaling element.
     $self->_write_scaling( $x_axis->{_reverse} );
+
+    $self->_write_delete( 1 ) unless $x_axis->{_show};
 
     # Write the c:axPos element.
     $self->_write_axis_pos( $position, $y_axis->{_reverse} );
@@ -1667,18 +1787,21 @@ sub _write_cat_axis {
     $self->_write_tick_label_pos( $x_axis->{_label_position} );
 
     # Write the c:crossAx element.
-    $self->_write_cross_axis( $self->{_axis_ids}->[1] );
+    $self->_write_cross_axis( $axis_ids->[1] );
 
-    # Note, the category crossing comes from the value axis.
-    if ( !defined $y_axis->{_crossing} || $y_axis->{_crossing} eq 'max' ) {
+    if ( $x_axis->{_show} ) {
 
-        # Write the c:crosses element.
-        $self->_write_crosses( $y_axis->{_crossing} );
-    }
-    else {
+        # Note, the category crossing comes from the value axis.
+        if ( !defined $y_axis->{_crossing} || $y_axis->{_crossing} eq 'max' ) {
 
-        # Write the c:crossesAt element.
-        $self->_write_c_crosses_at( $y_axis->{_crossing} );
+            # Write the c:crosses element.
+            $self->_write_crosses( $y_axis->{_crossing} );
+        }
+        else {
+
+            # Write the c:crossesAt element.
+            $self->_write_c_crosses_at( $y_axis->{_crossing} );
+        }
     }
 
     # Write the c:auto element.
@@ -1704,19 +1827,21 @@ sub _write_cat_axis {
 #
 sub _write_val_axis {
 
-    my $self                 = shift;
-    my $position             = shift || $self->{_val_axis_position};
-    my $hide_major_gridlines = shift;
-    my $horiz                = $self->{_horiz_val_axis};
-    my $x_axis               = $self->{_x_axis};
-    my $y_axis               = $self->{_y_axis};
+    my $self     = shift;
+    my %args     = @_;
+    my $x_axis   = $args{x_axis};
+    my $y_axis   = $args{y_axis};
+    my $axis_ids = $args{axis_ids};
+
+    my $position = $self->{_val_axis_position};
+    my $horiz    = $self->{_horiz_val_axis};
 
     # Overwrite the default axis position with a user supplied value.
     $position = $y_axis->{_position} || $position;
 
     $self->{_writer}->startTag( 'c:valAx' );
 
-    $self->_write_axis_id( $self->{_axis_ids}->[1] );
+    $self->_write_axis_id( $axis_ids->[1] );
 
     # Write the c:scaling element.
     $self->_write_scaling(
@@ -1724,11 +1849,13 @@ sub _write_val_axis {
         $y_axis->{_max},     $y_axis->{_log_base}
     );
 
+    $self->_write_delete( 1 ) unless $y_axis->{_show};
+
     # Write the c:axPos element.
     $self->_write_axis_pos( $position, $x_axis->{_reverse} );
 
     # Write the c:majorGridlines element.
-    $self->_write_major_gridlines() if not $hide_major_gridlines;
+    $self->_write_major_gridlines() if $y_axis->{_major_gridlines};
 
     # Write the axis title elements.
     my $title;
@@ -1746,7 +1873,7 @@ sub _write_val_axis {
     $self->_write_tick_label_pos( $y_axis->{_label_position} );
 
     # Write the c:crossAx element.
-    $self->_write_cross_axis( $self->{_axis_ids}->[0] );
+    $self->_write_cross_axis( $axis_ids->[0] );
 
     # Note, the category crossing comes from the value axis.
     if ( !defined $x_axis->{_crossing} || $x_axis->{_crossing} eq 'max' ) {
@@ -3872,6 +3999,8 @@ The properties that can be set are:
     reverse
     log_base
     label_position
+    major_gridlines
+    show
 
 These are explained below. Some properties are only applicable to value or category axes, as indicated. See L<Value and Category Axes> for an explanation of Excel's distinction between the axis types.
 
@@ -3945,6 +4074,14 @@ Set the "Axis labels" position for the axis. The following positions are availab
     low
     none
 
+=item * C<major_gridlines>
+
+Show or hide the major gridlines for a given axis.  Acceptable values are true or false (1 or 0).
+
+=item * C<show>
+
+Show or hide the axis.  Acceptable values are true or false (1 or 0).
+
 =back
 
 More than one property can be set in a call to C<set_x_axis>:
@@ -3959,6 +4096,26 @@ More than one property can be set in a call to C<set_x_axis>:
 =head2 set_y_axis()
 
 The C<set_y_axis()> method is used to set properties of the Y axis. The properties that can be set are the same as for C<set_x_axis>, see above.
+
+
+=head2 set_x2_axis()
+
+The C<set_x2_axis()> method is used to set properties of the secondary X axis.
+The properties that can be set are the same as for C<set_x_axis>, see above.
+The default properties for this axis are:
+
+    label_position: "none"
+    crossing:       "max"
+    show:           0
+
+
+=head2 set_y2_axis()
+
+The C<set_y2_axis()> method is used to set properties of the secondary Y axis.
+The properties that can be set are the same as for C<set_x_axis>, see above.
+The default properties for this axis are:
+
+    major_gridlines: 0
 
 
 =head2 set_title()
